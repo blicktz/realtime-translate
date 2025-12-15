@@ -42,8 +42,6 @@ from services import (
     validate_translation_config,
     validate_vad_config,
 )
-from transports.websocket_transport import WebSocketHandler
-from transports.webrtc_transport import WebRTCHandler
 from utils import setup_logging, get_logger
 
 # Initialize logging
@@ -260,86 +258,6 @@ async def list_sessions():
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# WebSocket endpoint for development transport
-@app.websocket("/ws/session/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """
-    WebSocket endpoint for development transport.
-
-    Args:
-        websocket: WebSocket connection
-        session_id: Session identifier
-    """
-    session_manager = get_session_manager()
-
-    # Verify session exists
-    session = session_manager.get_session(session_id)
-    if not session:
-        await websocket.close(code=404, reason="Session not found")
-        return
-
-    # Get state machine
-    state_machine = session_manager.get_state_machine(session_id)
-    if not state_machine:
-        await websocket.close(code=500, reason="State machine not found")
-        return
-
-    # Create service processors
-    try:
-        stt_processor = STTServiceFactory.create_stt_processor(
-            session.home_language,
-            session_id
-        )
-
-        tts_processor = TTSServiceFactory.create_tts_processor(
-            session.target_language,
-            session_id=session_id
-        )
-
-        translation_processor = TranslationServiceFactory.create_translation_processor(
-            source_language=session.home_language,
-            target_language=session.target_language,
-            session_id=session_id
-        )
-
-        vad_processor = VADServiceFactory.create_vad_processor(
-            session_id=session_id
-        )
-
-        # Create pipeline manager
-        pipeline_manager = PipelineManager(
-            session=session,
-            state_machine=state_machine
-        )
-
-        # Set services in pipeline
-        pipeline_manager.set_services(
-            stt_processor=stt_processor,
-            tts_processor=tts_processor,
-            translation_processor=translation_processor,
-            vad_processor=vad_processor
-        )
-
-        # Initialize and start pipeline
-        await pipeline_manager.initialize()
-        await pipeline_manager.start()
-
-        # Create WebSocket handler
-        handler = WebSocketHandler(
-            websocket=websocket,
-            session_id=session_id,
-            session_manager=session_manager,
-            pipeline_manager=pipeline_manager
-        )
-
-        # Handle connection
-        await handler.handle_connection()
-
-    except Exception as e:
-        logger.error(f"Error in WebSocket handler: {e}")
-        await websocket.close(code=500, reason=str(e))
-
-
 # Helper function to setup pipeline with WebRTC
 async def setup_webrtc_pipeline(session, webrtc_connection):
     """
@@ -384,6 +302,50 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
             webrtc_connection=webrtc_connection,
             params=transport_params
         )
+
+        # Register callbacks to send data via WebRTC data channels
+        def on_text_output(text: str, speaker: str):
+            """Send translated text to frontend via WebRTC data channel."""
+            try:
+                logger.info(f"[CALLBACK] on_text_output CALLED: text='{text}', speaker={speaker}")
+
+                connection = transport._client._webrtc_connection
+                logger.info(f"[CALLBACK] Connection object: {connection}")
+                logger.info(f"[CALLBACK] About to call send_app_message()")
+
+                connection.send_app_message({
+                    "type": "translation",
+                    "text": text,
+                    "speaker": speaker
+                })
+
+                logger.info(f"[CALLBACK] ✅ send_app_message() returned successfully for: '{text}' (speaker={speaker})")
+            except Exception as e:
+                logger.error(f"[CALLBACK] ❌ Error sending text output: {e}", exc_info=True)
+
+        def on_audio_level(level: float, speaker: str):
+            """Send audio level to frontend via WebRTC data channel."""
+            # TEMPORARILY DISABLED to reduce data channel traffic and test translation messages
+            pass
+            # try:
+            #     transport._client._webrtc_connection.send_app_message({
+            #         "type": "audio_level",
+            #         "level": level,
+            #         "speaker": speaker
+            #     })
+            # except Exception as e:
+            #     logger.error(f"[WebRTC] Error sending audio level: {e}")
+
+        def on_thinking(is_thinking: bool):
+            """Send thinking indicator to frontend via WebRTC data channel."""
+            try:
+                transport._client._webrtc_connection.send_app_message({
+                    "type": "thinking",
+                    "is_thinking": is_thinking
+                })
+                logger.info(f"[WebRTC] Sent thinking indicator: {is_thinking}")
+            except Exception as e:
+                logger.error(f"[WebRTC] Error sending thinking indicator: {e}")
 
         # Register client connection handler
         @transport.event_handler("on_client_connected")
@@ -453,6 +415,12 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
             vad_processor=vad_processor
         )
 
+        # Set WebRTC callbacks on pipeline manager
+        pipeline_manager.on_text_output = on_text_output
+        pipeline_manager.on_audio_level = on_audio_level
+        pipeline_manager.on_thinking = on_thinking
+        logger.info("[WebRTC] Pipeline callbacks registered for data channel communication")
+
         # Build pipeline with transport and PTT routing processors
         from core.pipeline_manager import AudioRouterProcessor, TextRouterProcessor, AudioLevelMonitor, VADLogger
 
@@ -473,6 +441,14 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
             transport.output(),          # WebRTC audio output
         ])
 
+        # Log pipeline structure for debugging
+        logger.info("[PIPELINE] Pipeline created with the following processors:")
+        for i, proc in enumerate(pipeline.processors):
+            proc_name = proc.__class__.__name__
+            prev_name = proc.previous.__class__.__name__ if proc.previous else "None"
+            next_name = proc.next.__class__.__name__ if proc.next else "None"
+            logger.info(f"  [{i}] {proc_name} (prev={prev_name}, next={next_name})")
+
         # Create and run pipeline task
         task = PipelineTask(pipeline)
         runner = PipelineRunner()
@@ -484,8 +460,10 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
         # Wait to allow StartFrame to propagate through the pipeline
         # This prevents the race condition where audio arrives before processors are initialized
         # The runner.run() task immediately sends StartFrame down the pipeline,
-        # 500ms ensures it reaches all processors even with logging overhead
-        await asyncio.sleep(0.5)
+        # With 11 processors and logging overhead, we need ~1.5s to ensure all processors receive StartFrame
+        logger.info("[PIPELINE] Waiting 1.5s for StartFrame to propagate through all 11 processors...")
+        await asyncio.sleep(1.5)
+        logger.info("[PIPELINE] StartFrame propagation wait complete, pipeline should be ready")
         logger.info(f"Pipeline initialization wait completed for session: {session.session_id}")
 
         # Store runner, task, and pipeline manager in session for cleanup

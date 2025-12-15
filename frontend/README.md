@@ -63,7 +63,7 @@ frontend/
 │   └── settings-store.ts      # User settings (persisted)
 ├── hooks/
 │   ├── usePTT.ts             # PTT button logic
-│   ├── useWebSocket.ts       # WebSocket connection
+│   ├── usePipecatClient.ts   # WebRTC connection (Pipecat SDK)
 │   └── useWakeLock.ts        # Screen wake lock
 ├── lib/
 │   └── types.ts              # TypeScript definitions
@@ -162,19 +162,20 @@ const { isPTTPressed, handlers } = usePTT(onPressStart, onPressEnd)
 
 Returns touch/mouse event handlers for PTT button.
 
-### useWebSocket
+### usePipecatClient
 
-Manages WebSocket connection to backend:
+Manages WebRTC connection to backend using Pipecat SDK:
 
 ```typescript
-const { connect, disconnect, sendMessage } = useWebSocket()
+const { connect, disconnect, sendPTTPress, sendPTTRelease } = usePipecatClient()
 ```
 
 Handles:
-- Connection lifecycle
-- Message parsing
+- WebRTC peer connection via SmallWebRTC transport
+- Real-time audio streaming (bidirectional)
+- Data channel messages (translation text, audio levels, thinking indicator)
 - Auto-reconnection with exponential backoff
-- Audio playback (TTS output)
+- PTT state messaging
 
 ### useWakeLock
 

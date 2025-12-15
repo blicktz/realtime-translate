@@ -253,35 +253,43 @@ export class NebulaTranslateClient {
   private handleMessage(message: RTVIMessage) {
     const { type, ...data } = message
 
+    // Log all received messages for debugging
+    console.log('[Pipecat] Received message:', { type, ...data })
+
     switch (type) {
       case 'transcript':
+        console.log('[Pipecat] 📝 Transcript received:', data.text, 'speaker:', data.speaker)
         this.callbacks.onTranscript?.(data.text, data.speaker)
         break
 
       case 'translation':
+        console.log('[Pipecat] 🌐 Translation received:', data.text, 'speaker:', data.speaker)
         this.callbacks.onTranslation?.(data.text, data.speaker)
         break
 
       case 'audio_level':
+        // Uncomment for audio level debugging (can be noisy)
+        // console.log('[Pipecat] 🔊 Audio level:', data.level, 'speaker:', data.speaker)
         this.callbacks.onAudioLevel?.(data.level, data.speaker)
         break
 
       case 'thinking':
+        console.log('[Pipecat] 🤔 Thinking indicator:', data.is_thinking)
         this.callbacks.onThinking?.(data.is_thinking)
         break
 
       case 'connection_state':
         // Handle connection state changes
-        console.log('Connection state:', data.state)
+        console.log('[Pipecat] 🔌 Connection state:', data.state)
         break
 
       case 'error':
-        console.error('Backend error:', data.error_message)
+        console.error('[Pipecat] ❌ Backend error:', data.error_message)
         this.callbacks.onError?.(new Error(data.error_message))
         break
 
       default:
-        console.log('Unknown message type:', type, data)
+        console.log('[Pipecat] ⚠️ Unknown message type:', type, data)
     }
   }
 

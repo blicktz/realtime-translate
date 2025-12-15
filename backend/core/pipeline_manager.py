@@ -252,6 +252,7 @@ class AudioRouterProcessor(FrameProcessor):
         if not isinstance(frame, (AudioRawFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                                    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
             await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)  # CRITICAL: Forward SystemFrames too!
             return
 
         # Only process downstream frames
@@ -267,6 +268,12 @@ class AudioRouterProcessor(FrameProcessor):
                 f"[AUDIO_ROUTER] 🎤 UserStartedSpeakingFrame received - "
                 f"State: {state_info['state']}, PTT: {state_info['ptt_pressed']}"
             )
+
+            # If PTT is NOT pressed, this is partner speaking via VAD
+            if not self.manager.state_machine.is_user_turn:
+                self.manager.state_machine.start_partner_processing()
+                self.manager.logger.info("[AUDIO_ROUTER] ✅ Started partner processing (VAD detected)")
+
             await self.push_frame(frame, direction)
             return
 
@@ -277,13 +284,17 @@ class AudioRouterProcessor(FrameProcessor):
                     "[AUDIO_ROUTER] 🔇 Ignoring UserStoppedSpeakingFrame (PTT pressed, user still speaking)"
                 )
                 return
-            # Otherwise pass it
+            # Otherwise pass it (partner stopped speaking)
             state_info = self.manager.state_machine.get_state_info()
             self.manager.logger.info(
                 f"[AUDIO_ROUTER] 🔇 UserStoppedSpeakingFrame received - "
                 f"State: {state_info['state']}, PTT: {state_info['ptt_pressed']}"
             )
             await self.push_frame(frame, direction)
+
+            # Finish partner processing (partner stopped speaking)
+            self.manager.state_machine.finish_partner_processing()
+            self.manager.logger.info("[AUDIO_ROUTER] ✅ Finished partner processing")
             return
 
         # Handle Audio Frames
@@ -306,19 +317,20 @@ class AudioRouterProcessor(FrameProcessor):
                     self.manager.logger.info(f"[AUDIO_ROUTER] ✅ Forwarding frame #{self._frame_count} (USER TURN)")
                 await self.push_frame(frame, direction)
 
-            elif self.manager.state_machine.should_enable_vad:
-                # Partner turn: Forward audio (VAD enabled)
+            elif self.manager.state_machine.is_partner_turn:
+                # Partner turn (includes listening AND processing): Forward audio
                 if self._frame_count % 50 == 1:
-                    self.manager.logger.info(f"[AUDIO_ROUTER] ✅ Forwarding frame #{self._frame_count} (PARTNER TURN - VAD)")
+                    state = self.manager.state_machine.state.value
+                    self.manager.logger.info(f"[AUDIO_ROUTER] ✅ Forwarding frame #{self._frame_count} (PARTNER - {state})")
                 await self.push_frame(frame, direction)
 
             else:
-                # Drop frame (not in processing mode)
+                # Drop frame (idle/disconnected state)
                 if self._frame_count % 50 == 1:
                     state_info = self.manager.state_machine.get_state_info()
                     self.manager.logger.warning(
                         f"[AUDIO_ROUTER] ❌ DROPPING frame #{self._frame_count} - State: {state_info['state']}, "
-                        f"PTT: {state_info['ptt_pressed']}, VAD_enable: {state_info['should_enable_vad']}"
+                        f"PTT: {state_info['ptt_pressed']}"
                     )
                 pass
 
@@ -339,22 +351,34 @@ class TextRouterProcessor(FrameProcessor):
         # Handle system frames (StartFrame, EndFrame, etc.) with parent class
         if not isinstance(frame, TextFrame):
             await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)  # CRITICAL: Forward SystemFrames too!
             return
 
         # Route text frames based on turn state
         current_speaker = self.manager.state_machine.current_speaker
+
+        # Debug logging to track text frame routing
+        self.manager.logger.info(f"[TEXT_ROUTER] Received TextFrame: '{frame.text}'")
+        self.manager.logger.info(f"[TEXT_ROUTER] current_speaker: {current_speaker}")
+        self.manager.logger.info(f"[TEXT_ROUTER] should_output_audio: {self.manager.state_machine.should_output_audio}")
 
         if self.manager.state_machine.should_output_audio:
             # User turn: forward to TTS
             await self.push_frame(frame, direction)
             # Also emit text for display
             if current_speaker:
+                self.manager.logger.info(f"[TEXT_ROUTER] Calling _emit_text_output (USER TURN)")
                 self.manager._emit_text_output(frame.text, current_speaker)
+            else:
+                self.manager.logger.warning(f"[TEXT_ROUTER] ❌ current_speaker is None! Cannot emit text.")
 
         else:
             # Partner turn: text only, no TTS
             if current_speaker:
+                self.manager.logger.info(f"[TEXT_ROUTER] Calling _emit_text_output (PARTNER TURN)")
                 self.manager._emit_text_output(frame.text, current_speaker)
+            else:
+                self.manager.logger.warning(f"[TEXT_ROUTER] ❌ current_speaker is None! Cannot emit text.")
             # Don't forward to TTS
 
 
@@ -366,16 +390,32 @@ class VADLogger(FrameProcessor):
     def __init__(self, manager: PipelineManager):
         super().__init__()
         self.manager = manager
+        self._frame_count = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        # FIRST: Let parent class handle system frames
+        await super().process_frame(frame, direction)
+
+        # Track frames for debugging
+        self._frame_count += 1
+
         # Log VAD events (transport generates VAD* frame types)
         if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
             self.manager.logger.info("[VAD] 🎤 Speech STARTED - VAD detected voice activity")
         elif isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
             self.manager.logger.info("[VAD] 🔇 Speech STOPPED - VAD detected silence")
 
-        # Always forward the frame
-        await super().process_frame(frame, direction)
+        # Log every 100th frame for debugging
+        if self._frame_count % 100 == 1:
+            frame_type = frame.__class__.__name__
+            next_processor = self._next.__class__.__name__ if self._next else "None"
+            self.manager.logger.info(
+                f"[VAD_LOGGER] Frame #{self._frame_count}: "
+                f"type={frame_type}, next={next_processor}"
+            )
+
+        # CRITICAL: Forward ALL frames to next processor (this was missing!)
+        await self.push_frame(frame, direction)
 
 
 class AudioLevelMonitor(FrameProcessor):
@@ -392,12 +432,26 @@ class AudioLevelMonitor(FrameProcessor):
         # FIRST: Let parent class handle system frames (StartFrame, CancelFrame, etc.)
         await super().process_frame(frame, direction)
 
+        # Track all frames for debugging
+        self._frame_count += 1
+
+        # Log frame details every 100 frames for debugging
+        if self._frame_count % 100 == 1:
+            frame_type = frame.__class__.__name__
+            # Check if processor has been started (accessing private attribute)
+            started = getattr(self, '_FrameProcessor__started', None)
+            next_processor = self._next.__class__.__name__ if self._next else "None"
+            self.manager.logger.info(
+                f"[AUDIO_MONITOR] Frame #{self._frame_count}: "
+                f"type={frame_type}, direction={direction}, "
+                f"started={started}, next={next_processor}"
+            )
+
         # Monitor AudioRawFrame before forwarding
         if isinstance(frame, AudioRawFrame) and direction == FrameDirection.DOWNSTREAM:
-            self._frame_count += 1
-            # Log every 100th frame
+            # Log audio frame details
             if self._frame_count % 100 == 1:
-                self.manager.logger.info(f"[AUDIO_MONITOR] Frame #{self._frame_count} received, size={len(frame.audio)} bytes")
+                self.manager.logger.info(f"[AUDIO_MONITOR] Audio frame size={len(frame.audio)} bytes")
 
             # Calculate audio level
             try:
@@ -413,5 +467,17 @@ class AudioLevelMonitor(FrameProcessor):
             except Exception as e:
                 self.manager.logger.error(f"Error calculating audio level: {e}")
 
-        # SECOND: Forward ALL frames to next processor in pipeline
-        await self.push_frame(frame, direction)
+        # CRITICAL: Forward ALL frames to next processor in pipeline
+        try:
+            if self._frame_count % 100 == 1:
+                self.manager.logger.info(f"[AUDIO_MONITOR] About to call push_frame() for frame #{self._frame_count}")
+
+            await self.push_frame(frame, direction)
+
+            if self._frame_count % 100 == 1:
+                self.manager.logger.info(f"[AUDIO_MONITOR] push_frame() completed successfully for frame #{self._frame_count}")
+        except Exception as e:
+            self.manager.logger.error(
+                f"[AUDIO_MONITOR] push_frame() FAILED for frame #{self._frame_count}: {e}",
+                exc_info=True
+            )

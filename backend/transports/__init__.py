@@ -1,8 +1,8 @@
 """
 Transport layer for Nebula Translate backend.
+
+Transport is now handled directly via Pipecat's SmallWebRTC in main.py.
+WebRTC callbacks are registered inline in setup_webrtc_pipeline().
 """
 
-from .websocket_transport import WebSocketHandler
-from .webrtc_transport import WebRTCHandler
-
-__all__ = ["WebSocketHandler", "WebRTCHandler"]
+__all__ = []

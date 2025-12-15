@@ -9,7 +9,7 @@ import asyncio
 import httpx
 from typing import Optional, List
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, TextFrame
+from pipecat.frames.frames import Frame, TextFrame, TranscriptionFrame
 from config import settings
 from models import LanguageCode, LANGUAGE_NAMES
 from utils import get_logger
@@ -74,9 +74,15 @@ Output format: Plain text translation only, no markdown or formatting."""
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process text frames for translation."""
 
-        # Let base class handle system frames (StartFrame, EndFrame, etc.)
-        if direction != FrameDirection.DOWNSTREAM or not isinstance(frame, TextFrame):
+        # Handle non-text frames (forward without logging to reduce noise)
+        if not isinstance(frame, (TextFrame, TranscriptionFrame)):
             await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+            return
+
+        # Only process downstream text frames
+        if direction != FrameDirection.DOWNSTREAM:
+            await self.push_frame(frame, direction)
             return
 
         # Translate the text
@@ -88,12 +94,12 @@ Output format: Plain text translation only, no markdown or formatting."""
                 await self.push_frame(frame, direction)
                 return
 
-            logger.debug(f"Translating: '{original_text}'")
+            logger.info(f"[TRANSLATION] Translating: '{original_text}'")
 
             # Call translation API
             translated_text = await self._translate(original_text)
 
-            logger.debug(f"Translation result: '{translated_text}'")
+            logger.info(f"[TRANSLATION] ✅ Translation complete: '{translated_text}'")
 
             # Create new text frame with translation
             translated_frame = TextFrame(text=translated_text)
@@ -102,7 +108,7 @@ Output format: Plain text translation only, no markdown or formatting."""
             await self.push_frame(translated_frame, direction)
 
         except Exception as e:
-            logger.error(f"Translation error: {e}")
+            logger.error(f"[TRANSLATION] ❌ Translation error: {e}", exc_info=True)
 
             # On error, pass through original text
             await self.push_frame(frame, direction)
