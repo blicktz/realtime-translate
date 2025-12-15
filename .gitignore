@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.turbo
+
+# Python
+backend/*.egg-info/
+backend/dist/
+backend/build/
+backend/.pytest_cache/
+backend/.coverage
+backend/htmlcov/
+
+# Logs
+*.log
+backend/logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+*.cover
+.hypothesis/
+
+# PWA
+frontend/public/sw.js
+frontend/public/workbox-*.js
+
+# Temporary files
+*.tmp
+temp/
+tmp/
