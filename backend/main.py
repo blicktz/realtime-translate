@@ -377,21 +377,39 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
             params=transport_params
         )
 
+        # Register client connection handler
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            """Called when frontend client connects via WebRTC."""
+            logger.info(f"WebRTC client connected (session={session.session_id})")
+            # Log initial state for debugging
+            state_info = state_machine.get_state_info()
+            logger.info(f"Initial state: {state_info}")
+
+        # Register client disconnection handler
+        @transport.event_handler("on_client_disconnected")
+        async def on_client_disconnected(transport, client):
+            """Called when frontend client disconnects."""
+            logger.info(f"WebRTC client disconnected (session={session.session_id})")
+
         # Register PTT message handler
         @transport.event_handler("on_app_message")
-        async def on_ptt_message(transport, message):
+        async def on_ptt_message(transport, message, sender):
             """Handle PTT messages from frontend."""
             try:
+                logger.debug(f"Received app message: {message}")
                 if isinstance(message, dict):
                     msg_type = message.get('type')
                     if msg_type == 'ptt_state':
                         ptt_state = message.get('state')
                         if ptt_state == 'pressed':
                             await pipeline_manager.handle_ptt_press()
-                            logger.debug(f"PTT pressed (session={session.session_id})")
+                            logger.info(f"PTT PRESSED (session={session.session_id})")
                         elif ptt_state == 'released':
                             await pipeline_manager.handle_ptt_release()
-                            logger.debug(f"PTT released (session={session.session_id})")
+                            logger.info(f"PTT RELEASED (session={session.session_id})")
+                    else:
+                        logger.debug(f"Unknown message type: {msg_type}")
             except Exception as e:
                 logger.error(f"Error handling PTT message: {e}")
 
@@ -445,6 +463,13 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
         # Start the pipeline as a background task (non-blocking)
         # This allows the WebRTC callback to complete and return the answer
         pipeline_task = asyncio.create_task(runner.run(task))
+
+        # Brief wait to allow StartFrame to propagate through the pipeline
+        # This prevents the race condition where audio arrives before processors are initialized
+        # The runner.run() task immediately sends StartFrame down the pipeline,
+        # so 100ms is sufficient for it to reach all processors
+        await asyncio.sleep(0.1)
+        logger.debug(f"Pipeline initialization wait completed for session: {session.session_id}")
 
         # Store runner, task, and pipeline manager in session for cleanup
         session_manager._pipelines[session.session_id] = {

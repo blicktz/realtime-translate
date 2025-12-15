@@ -36,6 +36,7 @@ class SessionManager:
         self._sessions: Dict[str, SessionData] = {}
         self._state_machines: Dict[str, TranslatorStateMachine] = {}
         self._metrics: Dict[str, SessionMetrics] = {}
+        self._pipelines: Dict[str, dict] = {}  # Store pipeline components for cleanup
         self._cleanup_task: Optional[asyncio.Task] = None
 
     async def start(self):

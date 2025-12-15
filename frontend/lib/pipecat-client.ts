@@ -46,13 +46,14 @@ export class NebulaTranslateClient {
       this.transport = new SmallWebRTCTransport({
         baseUrl: config.baseUrl,
         sessionId: config.sessionId,
-        enableMic: config.enableMic ?? true,
-        enableCam: config.enableCam ?? false,
       })
 
       // Create Pipecat client with transport
+      // NOTE: enableMic/enableCam must be set at CLIENT level, not transport level
       this.client = new PipecatClient({
         transport: this.transport,
+        enableMic: config.enableMic ?? true,
+        enableCam: config.enableCam ?? false,
         params: {
           sessionId: config.sessionId,
         },
@@ -132,9 +133,11 @@ export class NebulaTranslateClient {
     }
 
     try {
+      console.log('[Pipecat] Sending message:', message)
       this.client.sendMessage(message)
+      console.log('[Pipecat] Message sent successfully')
     } catch (error) {
-      console.error('Error sending message:', error)
+      console.error('[Pipecat] Error sending message:', error)
       this.callbacks.onError?.(error as Error)
     }
   }
@@ -148,20 +151,13 @@ export class NebulaTranslateClient {
 
   /**
    * Enable/disable microphone
+   * Note: The Pipecat SDK handles mic enable/disable through the constructor config.
+   * Manual control may not be available in current SDK version.
    */
   async setMicrophoneEnabled(enabled: boolean) {
-    if (!this.client) return
-
-    try {
-      if (enabled) {
-        await this.client.enableMic()
-      } else {
-        await this.client.disableMic()
-      }
-    } catch (error) {
-      console.error('Error toggling microphone:', error)
-      this.callbacks.onError?.(error as Error)
-    }
+    console.warn('[Pipecat] setMicrophoneEnabled called but manual mic control not available in SDK')
+    console.warn('[Pipecat] Microphone is controlled via enableMic parameter in constructor')
+    // TODO: Find correct API for manual microphone control in Pipecat SDK v1.5.0
   }
 
   /**
@@ -195,20 +191,43 @@ export class NebulaTranslateClient {
 
     // Audio track events
     this.client.on(RTVIEvent.TrackStarted, (track: MediaStreamTrack) => {
-      console.log('RTVI Event: Track started', track.kind)
+      console.log('RTVI Event: Track started', track.kind, {
+        id: track.id,
+        label: track.label,
+        enabled: track.enabled,
+        muted: track.muted,
+        readyState: track.readyState
+      })
       if (track.kind === 'audio') {
         // Audio track ready for playback
         this.handleAudioTrack(track)
       }
     })
 
+    this.client.on(RTVIEvent.TrackStopped, (track: MediaStreamTrack) => {
+      console.log('RTVI Event: Track stopped', track.kind, track.id)
+    })
+
     // Microphone events
     this.client.on(RTVIEvent.MicrophoneEnabled, () => {
-      console.log('RTVI Event: Microphone enabled')
+      console.log('[Pipecat] RTVI Event: Microphone enabled ✓')
+      // Log mic tracks for debugging
+      if (this.client) {
+        const tracks = this.client.tracks()
+        console.log('[Pipecat] Current tracks:', {
+          local: tracks?.local,
+          remote: tracks?.remote
+        })
+      }
     })
 
     this.client.on(RTVIEvent.MicrophoneDisabled, () => {
-      console.log('RTVI Event: Microphone disabled')
+      console.log('[Pipecat] RTVI Event: Microphone disabled')
+    })
+
+    // Log all events for debugging
+    this.client.on(RTVIEvent.TransportStateChanged, (state: string) => {
+      console.log('[Pipecat] Transport state changed:', state)
     })
   }
 
