@@ -363,13 +363,21 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
             state_machine=state_machine
         )
 
-        # Create SmallWebRTC transport
+        # Create VAD processor FIRST (needed for TransportParams)
+        vad_processor = VADServiceFactory.create_vad_processor(
+            session_id=session.session_id
+        )
+
+        # Create SmallWebRTC transport with VAD analyzer
         transport_params = TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            audio_in_sample_rate=16000,  # Match VAD and STT sample rate
+            audio_out_sample_rate=16000,
             video_in_enabled=False,
             video_out_enabled=False,
-            audio_in_passthrough=True  # Pass all audio through for PTT-based routing
+            audio_in_passthrough=True,  # Pass all audio through for PTT-based routing
+            vad_analyzer=vad_processor  # VAD analyzer for speech detection
         )
 
         transport = SmallWebRTCTransport(
@@ -382,15 +390,22 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
         async def on_client_connected(transport, client):
             """Called when frontend client connects via WebRTC."""
             logger.info(f"WebRTC client connected (session={session.session_id})")
-            # Log initial state for debugging
+
+            # CRITICAL: Transition state machine to CONNECTED to enable audio processing
+            state_machine.connect()
+
+            # Log state for debugging
             state_info = state_machine.get_state_info()
-            logger.info(f"Initial state: {state_info}")
+            logger.info(f"State after connection: {state_info}")
 
         # Register client disconnection handler
         @transport.event_handler("on_client_disconnected")
         async def on_client_disconnected(transport, client):
             """Called when frontend client disconnects."""
             logger.info(f"WebRTC client disconnected (session={session.session_id})")
+
+            # Transition state machine to DISCONNECTED
+            state_machine.disconnect()
 
         # Register PTT message handler
         @transport.event_handler("on_app_message")
@@ -435,19 +450,21 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
             stt_processor=stt_processor,
             tts_processor=tts_processor,
             translation_processor=translation_processor,
-            vad_processor=None  # Not needed with PTT
+            vad_processor=vad_processor
         )
 
         # Build pipeline with transport and PTT routing processors
-        from core.pipeline_manager import AudioRouterProcessor, TextRouterProcessor, AudioLevelMonitor
+        from core.pipeline_manager import AudioRouterProcessor, TextRouterProcessor, AudioLevelMonitor, VADLogger
 
         audio_router = AudioRouterProcessor(pipeline_manager)
         text_router = TextRouterProcessor(pipeline_manager)
         audio_level_monitor = AudioLevelMonitor(pipeline_manager)
+        vad_logger = VADLogger(pipeline_manager)
 
         pipeline = Pipeline([
-            transport.input(),           # WebRTC audio input
+            transport.input(),           # WebRTC audio input (VAD handled by transport)
             audio_level_monitor,         # Monitor audio levels
+            vad_logger,                  # Log VAD events for debugging
             audio_router,                # Route based on PTT state
             stt_processor,               # Speech-to-text
             translation_processor,       # Translation
@@ -464,12 +481,12 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
         # This allows the WebRTC callback to complete and return the answer
         pipeline_task = asyncio.create_task(runner.run(task))
 
-        # Brief wait to allow StartFrame to propagate through the pipeline
+        # Wait to allow StartFrame to propagate through the pipeline
         # This prevents the race condition where audio arrives before processors are initialized
         # The runner.run() task immediately sends StartFrame down the pipeline,
-        # so 100ms is sufficient for it to reach all processors
-        await asyncio.sleep(0.1)
-        logger.debug(f"Pipeline initialization wait completed for session: {session.session_id}")
+        # 500ms ensures it reaches all processors even with logging overhead
+        await asyncio.sleep(0.5)
+        logger.info(f"Pipeline initialization wait completed for session: {session.session_id}")
 
         # Store runner, task, and pipeline manager in session for cleanup
         session_manager._pipelines[session.session_id] = {

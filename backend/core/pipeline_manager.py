@@ -21,7 +21,11 @@ from pipecat.frames.frames import (
     TextFrame,
     StartFrame,
     EndFrame,
-    CancelFrame
+    CancelFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame
 )
 
 from models import SessionData, SpeakerTurn, PTTState
@@ -92,7 +96,8 @@ class PipelineManager:
         if not all([
             self.stt_processor,
             self.tts_processor,
-            self.translation_processor
+            self.translation_processor,
+            self.vad_processor  # VAD is now required
         ]):
             raise RuntimeError("Services must be set before initializing pipeline")
 
@@ -102,11 +107,11 @@ class PipelineManager:
         audio_level_monitor = AudioLevelMonitor(self)
 
         # Build the pipeline
-        # The pipeline flow depends on the current state machine state
-        # Note: VAD is not included in pipeline as speech routing is controlled by PTT state
+        # VAD -> AudioRouter -> STT
         self.pipeline = Pipeline([
             audio_level_monitor,    # Monitor input audio levels
-            audio_router,           # Route based on PTT state
+            self.vad_processor,     # VAD (generates Speaking frames)
+            audio_router,           # Route/Filter based on PTT state
             self.stt_processor,     # Speech-to-text
             self.translation_processor,  # Translation
             text_router,            # Route text based on state
@@ -244,44 +249,78 @@ class AudioRouterProcessor(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # Handle system frames (StartFrame, EndFrame, etc.) with parent class
-        if not isinstance(frame, AudioRawFrame):
+        if not isinstance(frame, (AudioRawFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
+                                   VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
             await super().process_frame(frame, direction)
             return
 
-        # Only process downstream audio frames
+        # Only process downstream frames
         if direction != FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
             return
 
-        # Log audio frame receipt (throttled to every 100 frames)
-        self._frame_count += 1
-        if self._frame_count % 100 == 1:
+        # Handle Speaking Frames (VAD or PTT) - transport generates VAD* versions
+        if isinstance(frame, (UserStartedSpeakingFrame, VADUserStartedSpeakingFrame)):
+            # Always pass StartSpeaking (PTT or VAD)
             state_info = self.manager.state_machine.get_state_info()
-            self.manager.logger.debug(
-                f"Audio frame received (count={self._frame_count}), "
-                f"state={state_info['state']}, "
-                f"is_user_turn={state_info['ptt_pressed']}, "
-                f"should_enable_vad={state_info['should_enable_vad']}"
+            self.manager.logger.info(
+                f"[AUDIO_ROUTER] 🎤 UserStartedSpeakingFrame received - "
+                f"State: {state_info['state']}, PTT: {state_info['ptt_pressed']}"
             )
-
-        # Route audio frames based on PTT state
-        if self.manager.state_machine.is_user_turn:
-            # User turn: always process
             await self.push_frame(frame, direction)
+            return
 
-        elif self.manager.state_machine.should_enable_vad:
-            # Partner turn: only process if VAD enabled
-            await self.push_frame(frame, direction)
-
-        else:
-            # Drop frame (not in processing mode)
-            if self._frame_count == 1:
-                self.manager.logger.warning(
-                    f"Dropping audio frames - state: {self.manager.state_machine.state.value}, "
-                    f"PTT: {self.manager.state_machine.is_user_turn}, "
-                    f"VAD should enable: {self.manager.state_machine.should_enable_vad}"
+        if isinstance(frame, (UserStoppedSpeakingFrame, VADUserStoppedSpeakingFrame)):
+            # If PTT is pressed, IGNORE StopSpeaking (prevent VAD from cutting off user)
+            if self.manager.state_machine.is_user_turn:
+                self.manager.logger.info(
+                    "[AUDIO_ROUTER] 🔇 Ignoring UserStoppedSpeakingFrame (PTT pressed, user still speaking)"
                 )
-            pass
+                return
+            # Otherwise pass it
+            state_info = self.manager.state_machine.get_state_info()
+            self.manager.logger.info(
+                f"[AUDIO_ROUTER] 🔇 UserStoppedSpeakingFrame received - "
+                f"State: {state_info['state']}, PTT: {state_info['ptt_pressed']}"
+            )
+            await self.push_frame(frame, direction)
+            return
+
+        # Handle Audio Frames
+        if isinstance(frame, AudioRawFrame):
+            # Log audio frame receipt (throttled)
+            self._frame_count += 1
+
+            # Log every 50th frame with routing decision (more frequent for debugging)
+            if self._frame_count % 50 == 1:
+                state_info = self.manager.state_machine.get_state_info()
+                self.manager.logger.info(
+                    f"[AUDIO_ROUTER] Frame #{self._frame_count} - State: {state_info['state']}, "
+                    f"PTT: {state_info['ptt_pressed']}, VAD_should_enable: {state_info['should_enable_vad']}"
+                )
+
+            # Route audio based on state
+            if self.manager.state_machine.is_user_turn:
+                # User turn: Forward audio (PTT pressed)
+                if self._frame_count % 50 == 1:
+                    self.manager.logger.info(f"[AUDIO_ROUTER] ✅ Forwarding frame #{self._frame_count} (USER TURN)")
+                await self.push_frame(frame, direction)
+
+            elif self.manager.state_machine.should_enable_vad:
+                # Partner turn: Forward audio (VAD enabled)
+                if self._frame_count % 50 == 1:
+                    self.manager.logger.info(f"[AUDIO_ROUTER] ✅ Forwarding frame #{self._frame_count} (PARTNER TURN - VAD)")
+                await self.push_frame(frame, direction)
+
+            else:
+                # Drop frame (not in processing mode)
+                if self._frame_count % 50 == 1:
+                    state_info = self.manager.state_machine.get_state_info()
+                    self.manager.logger.warning(
+                        f"[AUDIO_ROUTER] ❌ DROPPING frame #{self._frame_count} - State: {state_info['state']}, "
+                        f"PTT: {state_info['ptt_pressed']}, VAD_enable: {state_info['should_enable_vad']}"
+                    )
+                pass
 
 
 class TextRouterProcessor(FrameProcessor):
@@ -319,6 +358,26 @@ class TextRouterProcessor(FrameProcessor):
             # Don't forward to TTS
 
 
+class VADLogger(FrameProcessor):
+    """
+    Logs VAD (Voice Activity Detection) events for debugging.
+    """
+
+    def __init__(self, manager: PipelineManager):
+        super().__init__()
+        self.manager = manager
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        # Log VAD events (transport generates VAD* frame types)
+        if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+            self.manager.logger.info("[VAD] 🎤 Speech STARTED - VAD detected voice activity")
+        elif isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
+            self.manager.logger.info("[VAD] 🔇 Speech STOPPED - VAD detected silence")
+
+        # Always forward the frame
+        await super().process_frame(frame, direction)
+
+
 class AudioLevelMonitor(FrameProcessor):
     """
     Monitors audio input levels for visualization.
@@ -327,12 +386,19 @@ class AudioLevelMonitor(FrameProcessor):
     def __init__(self, manager: PipelineManager):
         super().__init__()
         self.manager = manager
+        self._frame_count = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        # CRITICAL: Call parent first to handle StartFrame and other system frames
+        # FIRST: Let parent class handle system frames (StartFrame, CancelFrame, etc.)
         await super().process_frame(frame, direction)
 
+        # Monitor AudioRawFrame before forwarding
         if isinstance(frame, AudioRawFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._frame_count += 1
+            # Log every 100th frame
+            if self._frame_count % 100 == 1:
+                self.manager.logger.info(f"[AUDIO_MONITOR] Frame #{self._frame_count} received, size={len(frame.audio)} bytes")
+
             # Calculate audio level
             try:
                 import numpy as np
@@ -346,3 +412,6 @@ class AudioLevelMonitor(FrameProcessor):
 
             except Exception as e:
                 self.manager.logger.error(f"Error calculating audio level: {e}")
+
+        # SECOND: Forward ALL frames to next processor in pipeline
+        await self.push_frame(frame, direction)

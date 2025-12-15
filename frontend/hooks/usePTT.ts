@@ -7,7 +7,7 @@ export function usePTT(onPressStart?: () => void, onPressEnd?: () => void) {
   const isPressingRef = useRef(false)
 
   const handlePressStart = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    e.preventDefault()
+    // e.preventDefault() - Removed to avoid passive listener error
 
     // Prevent duplicate press events
     if (isPressingRef.current) return
@@ -29,7 +29,7 @@ export function usePTT(onPressStart?: () => void, onPressEnd?: () => void) {
   }, [setPTTPressed, onPressStart])
 
   const handlePressEnd = useCallback((e: React.TouchEvent | React.MouseEvent) => {
-    e.preventDefault()
+    // e.preventDefault() - Removed to avoid passive listener error
 
     if (!isPressingRef.current) return
     isPressingRef.current = false

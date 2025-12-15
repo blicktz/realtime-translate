@@ -58,6 +58,11 @@ export class NebulaTranslateClient {
           sessionId: config.sessionId,
         },
       })
+      console.log('[Pipecat] Initialized client with config:', {
+        enableMic: config.enableMic ?? true,
+        enableCam: config.enableCam ?? false,
+        sessionId: config.sessionId
+      })
 
       // Register event handlers
       this.registerEventHandlers()
@@ -218,6 +223,17 @@ export class NebulaTranslateClient {
           local: tracks?.local,
           remote: tracks?.remote
         })
+        if (tracks?.local?.audio) {
+          console.log('[Pipecat] Local audio track details:', {
+            id: tracks.local.audio.id,
+            enabled: tracks.local.audio.enabled,
+            muted: tracks.local.audio.muted,
+            readyState: tracks.local.audio.readyState,
+            label: tracks.local.audio.label
+          })
+        } else {
+          console.warn('[Pipecat] No local audio track found despite MicrophoneEnabled event!')
+        }
       }
     })
 
