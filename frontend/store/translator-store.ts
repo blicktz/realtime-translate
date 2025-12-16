@@ -6,6 +6,9 @@ export const useTranslatorStore = create<TranslatorState>((set, get) => ({
   connectionState: 'disconnected',
   sessionId: null,
 
+  // Pipecat Client (shared across all components)
+  pipecatClient: null,
+
   // PTT State
   isPTTPressed: false,
   currentSpeaker: null,
@@ -26,6 +29,8 @@ export const useTranslatorStore = create<TranslatorState>((set, get) => ({
 
   // Actions
   setConnectionState: (state) => set({ connectionState: state }),
+
+  setPipecatClient: (client) => set({ pipecatClient: client }),
 
   setSessionId: (id) => set({ sessionId: id }),
 

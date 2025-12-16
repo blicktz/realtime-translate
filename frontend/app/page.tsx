@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import MainLayout from '@/components/layout/MainLayout'
 import ConnectionToggle from '@/components/ui/ConnectionToggle'
 import PTTButton from '@/components/ui/PTTButton'
@@ -10,10 +10,24 @@ import ChatFeed from '@/components/chat/ChatFeed'
 import SettingsPanel from '@/components/ui/SettingsPanel'
 import { useTranslatorStore } from '@/store/translator-store'
 import { useWakeLock } from '@/hooks/useWakeLock'
+import { usePipecatClient } from '@/hooks/usePipecatClient'
 
 export default function Home() {
-  const { connectionState, isProcessing } = useTranslatorStore()
+  const { connectionState, isProcessing, setPipecatClient } = useTranslatorStore()
   const isConnected = connectionState === 'connected'
+
+  // Initialize Pipecat client ONCE and store in Zustand for all components to access
+  const pipecatClient = usePipecatClient()
+  const hasStoredClient = useRef(false)
+
+  // Store Pipecat client in Zustand so all components can access it (run only once)
+  useEffect(() => {
+    if (!hasStoredClient.current) {
+      console.log('[App] Storing Pipecat client in Zustand store')
+      setPipecatClient(pipecatClient as any)
+      hasStoredClient.current = true
+    }
+  }, []) // Empty dependencies - run only once on mount
 
   // Request wake lock when connected
   useWakeLock(isConnected)

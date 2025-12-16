@@ -384,21 +384,43 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
         async def on_ptt_message(transport, message, sender):
             """Handle PTT messages from frontend."""
             try:
-                logger.debug(f"Received app message: {message}")
+                logger.info(f"[PTT_HANDLER] Received app message: {message}")
                 if isinstance(message, dict):
                     msg_type = message.get('type')
+                    logger.info(f"[PTT_HANDLER] Message type: {msg_type}")
+
+                    # Unwrap RTVI format: {"type": "client-message", "data": {...}}
+                    if msg_type == 'client-message':
+                        # Extract the actual message from the data field
+                        actual_message = message.get('data', {})
+                        logger.info(f"[PTT_HANDLER] Unwrapped RTVI message, actual data: {actual_message}")
+
+                        # Check if there's another layer with shorthand keys ('t' and 'd')
+                        if 't' in actual_message and 'd' in actual_message:
+                            # Double-wrapped with shorthand: {'t': 'client-message', 'd': {...}}
+                            inner_message = actual_message.get('d', {})
+                            logger.info(f"[PTT_HANDLER] Found double-wrapped message with shorthand, inner data: {inner_message}")
+                            msg_type = inner_message.get('type')
+                            message = inner_message
+                        else:
+                            # Single wrapped: directly use the data
+                            msg_type = actual_message.get('type')
+                            message = actual_message
+
+                    # Now check the actual message type
                     if msg_type == 'ptt_state':
                         ptt_state = message.get('state')
+                        logger.info(f"[PTT_HANDLER] PTT state: {ptt_state}")
                         if ptt_state == 'pressed':
                             await pipeline_manager.handle_ptt_press()
-                            logger.info(f"PTT PRESSED (session={session.session_id})")
+                            logger.info(f"[PTT_HANDLER] ✅ PTT PRESSED (session={session.session_id})")
                         elif ptt_state == 'released':
                             await pipeline_manager.handle_ptt_release()
-                            logger.info(f"PTT RELEASED (session={session.session_id})")
+                            logger.info(f"[PTT_HANDLER] ✅ PTT RELEASED (session={session.session_id})")
                     else:
-                        logger.debug(f"Unknown message type: {msg_type}")
+                        logger.info(f"[PTT_HANDLER] Unknown message type: {msg_type}")
             except Exception as e:
-                logger.error(f"Error handling PTT message: {e}")
+                logger.error(f"[PTT_HANDLER] ❌ Error handling PTT message: {e}", exc_info=True)
 
         # Create service processors
         stt_processor = STTServiceFactory.create_stt_processor(

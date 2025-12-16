@@ -39,11 +39,25 @@ export interface AudioLevel {
   speaker: SpeakerTurn
 }
 
+// Pipecat Client interface
+export interface PipecatClient {
+  connect: (sessionId: string) => Promise<void>
+  disconnect: () => Promise<void>
+  sendPTTPress: () => void
+  sendPTTRelease: () => void
+  sendMessage: (message: any) => void
+  isConnected: boolean
+  client: any
+}
+
 // Store state interface
 export interface TranslatorState {
   // Connection
   connectionState: ConnectionState
   sessionId: string | null
+
+  // Pipecat Client (shared across all components)
+  pipecatClient: PipecatClient | null
 
   // PTT State
   isPTTPressed: boolean
@@ -66,6 +80,7 @@ export interface TranslatorState {
   // Actions
   setConnectionState: (state: ConnectionState) => void
   setSessionId: (id: string | null) => void
+  setPipecatClient: (client: PipecatClient | null) => void
   setPTTPressed: (pressed: boolean) => void
   setProcessing: (processing: boolean, stage?: ProcessingStage) => void
   addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void

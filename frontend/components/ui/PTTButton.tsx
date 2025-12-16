@@ -1,23 +1,31 @@
 'use client'
 
-import { usePipecatClient } from '@/hooks/usePipecatClient'
 import { usePTT } from '@/hooks/usePTT'
+import { useTranslatorStore } from '@/store/translator-store'
 
 interface PTTButtonProps {
   disabled?: boolean
 }
 
 export default function PTTButton({ disabled = false }: PTTButtonProps) {
-  const { sendPTTPress, sendPTTRelease } = usePipecatClient()
+  const { pipecatClient } = useTranslatorStore()
 
   const { isPTTPressed, handlers } = usePTT(
     () => {
       // On press start
-      sendPTTPress()
+      if (pipecatClient) {
+        pipecatClient.sendPTTPress()
+      } else {
+        console.warn('[PTTButton] Pipecat client not available')
+      }
     },
     () => {
       // On press end
-      sendPTTRelease()
+      if (pipecatClient) {
+        pipecatClient.sendPTTRelease()
+      } else {
+        console.warn('[PTTButton] Pipecat client not available')
+      }
     }
   )
 

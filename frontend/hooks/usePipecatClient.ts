@@ -267,10 +267,20 @@ export function usePipecatClient() {
 
   const sendPTTPress = useCallback(() => {
     console.log('[usePipecatClient] sendPTTPress called')
-    if (clientRef.current?.isConnected()) {
-      clientRef.current.sendPTTPress()
+    console.log('[usePipecatClient] clientRef.current:', clientRef.current)
+    console.log('[usePipecatClient] clientRef.current exists?:', !!clientRef.current)
+
+    if (clientRef.current) {
+      const isConnected = clientRef.current.isConnected()
+      console.log('[usePipecatClient] isConnected() returned:', isConnected)
+
+      if (isConnected) {
+        clientRef.current.sendPTTPress()
+      } else {
+        console.warn('[usePipecatClient] Client exists but isConnected() returned false')
+      }
     } else {
-      console.warn('[usePipecatClient] sendPTTPress called but client not connected')
+      console.warn('[usePipecatClient] clientRef.current is null!')
     }
   }, [])
 

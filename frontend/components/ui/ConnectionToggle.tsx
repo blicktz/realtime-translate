@@ -3,17 +3,20 @@
 import { useCallback } from 'react'
 import { useTranslatorStore } from '@/store/translator-store'
 import { useSettingsStore } from '@/store/settings-store'
-import { usePipecatClient } from '@/hooks/usePipecatClient'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 export default function ConnectionToggle() {
-  const { connectionState, setSessionId, reset } = useTranslatorStore()
+  const { connectionState, setSessionId, reset, pipecatClient } = useTranslatorStore()
   const { homeLanguage, targetLanguage } = useSettingsStore()
-  const { connect, disconnect } = usePipecatClient()
 
   const handleConnect = useCallback(async () => {
     try {
+      if (!pipecatClient) {
+        console.error('Pipecat client not initialized')
+        return
+      }
+
       // Create session
       const response = await fetch(`${API_URL}/api/session/create`, {
         method: 'POST',
@@ -30,17 +33,19 @@ export default function ConnectionToggle() {
       setSessionId(data.session_id)
 
       // Connect Pipecat client
-      await connect(data.session_id)
+      await pipecatClient.connect(data.session_id)
     } catch (err) {
       console.error('Connection failed:', err)
       reset()
     }
-  }, [homeLanguage, targetLanguage, setSessionId, connect, reset])
+  }, [homeLanguage, targetLanguage, setSessionId, pipecatClient, reset])
 
   const handleDisconnect = useCallback(async () => {
-    await disconnect()
+    if (pipecatClient) {
+      await pipecatClient.disconnect()
+    }
     reset()
-  }, [disconnect, reset])
+  }, [pipecatClient, reset])
 
   const handleToggle = () => {
     if (connectionState === 'disconnected') {

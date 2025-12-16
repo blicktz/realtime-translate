@@ -31,6 +31,9 @@ export class NebulaTranslateClient {
   private client: PipecatClient | null = null
   private transport: SmallWebRTCTransport | null = null
   private callbacks: PipecatCallbacks = {}
+  private audioElement: HTMLAudioElement | null = null
+  private currentAudioStream: MediaStream | null = null
+  private transportState: string = 'disconnected'
 
   constructor() {
     // Client will be initialized when connect() is called
@@ -117,6 +120,24 @@ export class NebulaTranslateClient {
    */
   async disconnect() {
     try {
+      // Clean up audio element and stream
+      if (this.audioElement) {
+        console.log('[Audio] Cleaning up audio element on disconnect')
+        this.audioElement.pause()
+        this.audioElement.srcObject = null
+        this.audioElement = null
+      }
+
+      if (this.currentAudioStream) {
+        console.log('[Audio] Stopping audio stream tracks on disconnect')
+        this.currentAudioStream.getTracks().forEach(t => t.stop())
+        this.currentAudioStream = null
+      }
+
+      // Reset transport state
+      this.transportState = 'disconnected'
+      console.log('[Pipecat] Transport state reset to disconnected')
+
       if (this.client) {
         await this.client.disconnect()
         this.client = null
@@ -137,9 +158,15 @@ export class NebulaTranslateClient {
    * Send PTT press event
    */
   sendPTTPress() {
+    if (!this.isConnected()) {
+      console.error('[PTT] ❌ Cannot send press: not connected')
+      return
+    }
+    console.log('[PTT] 🔴 Sending PTT PRESS')
     this.sendMessage({
       type: 'ptt_state',
       state: 'pressed',
+      timestamp: Date.now()
     })
   }
 
@@ -147,28 +174,37 @@ export class NebulaTranslateClient {
    * Send PTT release event
    */
   sendPTTRelease() {
+    if (!this.isConnected()) {
+      console.error('[PTT] ❌ Cannot send release: not connected')
+      return
+    }
+    console.log('[PTT] 🟢 Sending PTT RELEASE')
     this.sendMessage({
       type: 'ptt_state',
       state: 'released',
+      timestamp: Date.now()
     })
   }
 
   /**
-   * Send custom message to backend
+   * Send custom message to backend via data channel
    */
   sendMessage(message: any) {
     if (!this.client) {
-      console.warn('Cannot send message: client not connected')
+      console.warn('[PTT] ⚠️ Cannot send message: client not connected')
       return
     }
 
     try {
-      console.log('[Pipecat] Sending message:', message)
-      // Use sendClientMessage to send custom messages to the backend
-      this.client.sendClientMessage(message.type || 'app-message', message)
-      console.log('[Pipecat] Message sent successfully')
+      console.log('[PTT] 📤 Sending message:', JSON.stringify(message))
+
+      // Use 'client-message' as generic type to ensure on_app_message handler receives it
+      // The backend will parse the 'type' field from the message payload
+      this.client.sendClientMessage('client-message', message)
+
+      console.log('[PTT] ✅ Message sent successfully via data channel')
     } catch (error) {
-      console.error('[Pipecat] Error sending message:', error)
+      console.error('[PTT] ❌ Error sending message:', error)
       this.callbacks.onError?.(error as Error)
     }
   }
@@ -177,7 +213,15 @@ export class NebulaTranslateClient {
    * Get current connection state
    */
   isConnected(): boolean {
-    return this.client?.state === 'connected'
+    // Transport state can be 'ready' or 'connected' when the connection is established
+    const isConnected = this.transportState === 'ready' || this.transportState === 'connected'
+    console.log('[PTT] isConnected() check:', {
+      transportState: this.transportState,
+      hasClient: !!this.client,
+      hasTransport: !!this.transport,
+      isConnected
+    })
+    return isConnected
   }
 
   /**
@@ -185,7 +229,7 @@ export class NebulaTranslateClient {
    * Note: The Pipecat SDK handles mic enable/disable through the constructor config.
    * Manual control may not be available in current SDK version.
    */
-  async setMicrophoneEnabled(enabled: boolean) {
+  async setMicrophoneEnabled(_enabled: boolean) {
     console.warn('[Pipecat] setMicrophoneEnabled called but manual mic control not available in SDK')
     console.warn('[Pipecat] Microphone is controlled via enableMic parameter in constructor')
     // TODO: Find correct API for manual microphone control in Pipecat SDK v1.5.0
@@ -244,9 +288,11 @@ export class NebulaTranslateClient {
     // Microphone events (Note: MicrophoneEnabled/Disabled events may not exist in current SDK version)
     // We'll use TrackStarted instead to detect microphone activation
 
-    // Log all events for debugging
+    // Log all events for debugging and store transport state
     this.client.on(RTVIEvent.TransportStateChanged, (state: string) => {
       console.log('[Pipecat] Transport state changed:', state)
+      this.transportState = state
+      console.log('[Pipecat] Stored transport state:', this.transportState)
     })
   }
 
@@ -311,17 +357,78 @@ export class NebulaTranslateClient {
    */
   private handleAudioTrack(track: MediaStreamTrack) {
     try {
+      console.log('[Audio] 🎵 Handling audio track:', {
+        kind: track.kind,
+        id: track.id,
+        label: track.label,
+        enabled: track.enabled,
+        readyState: track.readyState
+      })
+
+      // Stop and clean up previous audio if exists
+      if (this.audioElement) {
+        console.log('[Audio] Cleaning up previous audio element')
+        this.audioElement.pause()
+        this.audioElement.srcObject = null
+        this.audioElement = null
+      }
+
+      if (this.currentAudioStream) {
+        console.log('[Audio] Stopping previous audio stream tracks')
+        this.currentAudioStream.getTracks().forEach(t => t.stop())
+        this.currentAudioStream = null
+      }
+
       // Create media stream from track
       const stream = new MediaStream([track])
+      this.currentAudioStream = stream
 
-      // Create audio element for playback
+      // Create and configure audio element for playback
       const audio = new Audio()
       audio.srcObject = stream
       audio.autoplay = true
 
-      console.log('Audio track ready for playback')
+      // Store reference to prevent garbage collection
+      this.audioElement = audio
+
+      // Add event listeners for debugging and error handling
+      audio.onplay = () => {
+        console.log('[Audio] ✅ Audio playback started')
+      }
+
+      audio.onpause = () => {
+        console.log('[Audio] ⏸️ Audio playback paused')
+      }
+
+      audio.onerror = (e) => {
+        console.error('[Audio] ❌ Audio playback error:', e)
+        this.callbacks.onError?.(new Error('Audio playback failed'))
+      }
+
+      audio.onended = () => {
+        console.log('[Audio] 🏁 Audio playback ended')
+      }
+
+      // Handle autoplay policy restrictions
+      audio.play()
+        .then(() => {
+          console.log('[Audio] ✅ Audio element play() succeeded')
+        })
+        .catch((err) => {
+          // Autoplay was blocked by browser policy
+          console.warn('[Audio] ⚠️ Autoplay blocked, user interaction may be required:', err.message)
+
+          // Try to play with volume enabled after a short delay
+          setTimeout(() => {
+            audio.play()
+              .then(() => console.log('[Audio] ✅ Retry play() succeeded'))
+              .catch((retryErr) => console.error('[Audio] ❌ Retry play() failed:', retryErr.message))
+          }, 100)
+        })
+
+      console.log('[Audio] 🎧 Audio element created and ready for playback')
     } catch (error) {
-      console.error('Error handling audio track:', error)
+      console.error('[Audio] ❌ Error handling audio track:', error)
       this.callbacks.onError?.(error as Error)
     }
   }
