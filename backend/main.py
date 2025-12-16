@@ -305,21 +305,31 @@ async def setup_webrtc_pipeline(session, webrtc_connection):
 
         # Register callbacks to send data via WebRTC data channels
         def on_text_output(text: str, speaker: str):
-            """Send translated text to frontend via WebRTC data channel."""
+            """Send translated text to frontend via RTVI server message."""
             try:
                 logger.info(f"[CALLBACK] on_text_output CALLED: text='{text}', speaker={speaker}")
 
+                # Get WebRTC connection from transport
                 connection = transport._client._webrtc_connection
-                logger.info(f"[CALLBACK] Connection object: {connection}")
-                logger.info(f"[CALLBACK] About to call send_app_message()")
 
-                connection.send_app_message({
-                    "type": "translation",
-                    "text": text,
-                    "speaker": speaker
-                })
+                # Send RTVI-formatted server message directly through data channel
+                # Format: {"label": "rtvi-ai", "type": "server-message", "data": {...}}
+                rtvi_message = {
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        "type": "translation",
+                        "text": text,
+                        "speaker": speaker
+                    }
+                }
 
-                logger.info(f"[CALLBACK] ✅ send_app_message() returned successfully for: '{text}' (speaker={speaker})")
+                logger.info(f"[CALLBACK] Sending RTVI server-message via data channel")
+
+                # Send through data channel
+                connection.send_app_message(rtvi_message)
+
+                logger.info(f"[CALLBACK] ✅ RTVI message sent successfully for: '{text}' (speaker={speaker})")
             except Exception as e:
                 logger.error(f"[CALLBACK] ❌ Error sending text output: {e}", exc_info=True)
 

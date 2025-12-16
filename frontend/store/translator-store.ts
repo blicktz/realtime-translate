@@ -44,15 +44,26 @@ export const useTranslatorStore = create<TranslatorState>((set, get) => ({
   },
 
   addMessage: (message) => {
+    console.log('[STORE-ACTION] ═══ addMessage CALLED ═══')
+    console.log('[STORE-ACTION] Input message:', message)
+
     const newMessage: Message = {
       ...message,
       id: `${Date.now()}-${Math.random()}`,
       timestamp: new Date()
     }
 
-    set((state) => ({
-      messages: [...state.messages, newMessage].slice(-50) // Keep last 50 messages
-    }))
+    console.log('[STORE-ACTION] New message created:', newMessage)
+    console.log('[STORE-ACTION] Updating state...')
+
+    set((state) => {
+      console.log('[STORE-ACTION] Current messages count:', state.messages.length)
+      const updatedMessages = [...state.messages, newMessage].slice(-50)
+      console.log('[STORE-ACTION] New messages count:', updatedMessages.length)
+      return { messages: updatedMessages }
+    })
+
+    console.log('[STORE-ACTION] State updated successfully')
   },
 
   setLanguages: (home, target) => {

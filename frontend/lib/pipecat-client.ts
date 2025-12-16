@@ -20,6 +20,7 @@ export interface PipecatCallbacks {
   onDisconnected?: () => void
   onError?: (error: Error) => void
   onMessage?: (message: RTVIMessage) => void
+  onServerMessage?: (message: RTVIMessage) => void  // Official callback for data channel messages
   onTranscript?: (text: string, speaker: 'user' | 'partner') => void
   onTranslation?: (text: string, speaker: 'user' | 'partner') => void
   onAudioLevel?: (level: number, speaker: 'user' | 'partner') => void
@@ -43,10 +44,8 @@ export class NebulaTranslateClient {
       this.callbacks = callbacks
 
       // Create SmallWebRTC transport
-      this.transport = new SmallWebRTCTransport({
-        baseUrl: config.baseUrl,
-        sessionId: config.sessionId,
-      })
+      // Transport does not need baseUrl/sessionId - those are passed via connect() params
+      this.transport = new SmallWebRTCTransport()
 
       // Create Pipecat client with transport
       // NOTE: enableMic/enableCam must be set at CLIENT level, not transport level
@@ -54,9 +53,23 @@ export class NebulaTranslateClient {
         transport: this.transport,
         enableMic: config.enableMic ?? true,
         enableCam: config.enableCam ?? false,
-        params: {
-          sessionId: config.sessionId,
-        },
+        callbacks: {
+          // Official callback for receiving data channel messages from backend
+          onServerMessage: (message: RTVIMessage) => {
+            console.log('[CALLBACK] ✅ onServerMessage callback fired!')
+            console.log('[CALLBACK] Message received:', JSON.stringify(message, null, 2))
+            this.handleMessage(message)
+            this.callbacks.onServerMessage?.(message)
+          },
+          // Add more callbacks to catch different message types
+          onConnected: () => {
+            console.log('[CALLBACK] onConnected fired')
+            this.callbacks.onConnected?.()
+          },
+          onMessageError: (message: RTVIMessage) => {
+            console.log('[CALLBACK] onMessageError fired:', message)
+          }
+        }
       })
       console.log('[Pipecat] Initialized client with config:', {
         enableMic: config.enableMic ?? true,
@@ -66,6 +79,18 @@ export class NebulaTranslateClient {
 
       // Register event handlers
       this.registerEventHandlers()
+
+      // DEBUGGING: Log ALL events to catch everything (except noisy ones)
+      console.log('[DEBUG] Registering catch-all event listeners...')
+      const allEvents = Object.values(RTVIEvent)
+      const noisyEvents = ['localAudioLevel', 'remoteAudioLevel'] // Filter out audio level spam
+      allEvents.forEach((eventName) => {
+        if (!noisyEvents.includes(eventName)) {
+          this.client!.on(eventName as any, (...args: any[]) => {
+            console.log(`[SDK-EVENT] ${eventName} fired with args:`, args)
+          })
+        }
+      })
 
       // Connect to backend with WebRTC request parameters
       await this.client.connect({
@@ -139,7 +164,8 @@ export class NebulaTranslateClient {
 
     try {
       console.log('[Pipecat] Sending message:', message)
-      this.client.sendMessage(message)
+      // Use sendClientMessage to send custom messages to the backend
+      this.client.sendClientMessage(message.type || 'app-message', message)
       console.log('[Pipecat] Message sent successfully')
     } catch (error) {
       console.error('[Pipecat] Error sending message:', error)
@@ -183,13 +209,15 @@ export class NebulaTranslateClient {
     })
 
     // Error events
-    this.client.on(RTVIEvent.Error, (error: Error) => {
-      console.error('RTVI Event: Error', error)
+    this.client.on(RTVIEvent.Error, (message: RTVIMessage) => {
+      console.error('RTVI Event: Error', message)
+      const errorData = message.data as any
+      const error = new Error(errorData?.message || errorData?.error || 'Unknown error')
       this.callbacks.onError?.(error)
     })
 
-    // Message events
-    this.client.on(RTVIEvent.MessageReceived, (message: RTVIMessage) => {
+    // Message events - listen for server messages
+    this.client.on(RTVIEvent.ServerMessage, (message: RTVIMessage) => {
       this.handleMessage(message)
       this.callbacks.onMessage?.(message)
     })
@@ -213,33 +241,8 @@ export class NebulaTranslateClient {
       console.log('RTVI Event: Track stopped', track.kind, track.id)
     })
 
-    // Microphone events
-    this.client.on(RTVIEvent.MicrophoneEnabled, () => {
-      console.log('[Pipecat] RTVI Event: Microphone enabled ✓')
-      // Log mic tracks for debugging
-      if (this.client) {
-        const tracks = this.client.tracks()
-        console.log('[Pipecat] Current tracks:', {
-          local: tracks?.local,
-          remote: tracks?.remote
-        })
-        if (tracks?.local?.audio) {
-          console.log('[Pipecat] Local audio track details:', {
-            id: tracks.local.audio.id,
-            enabled: tracks.local.audio.enabled,
-            muted: tracks.local.audio.muted,
-            readyState: tracks.local.audio.readyState,
-            label: tracks.local.audio.label
-          })
-        } else {
-          console.warn('[Pipecat] No local audio track found despite MicrophoneEnabled event!')
-        }
-      }
-    })
-
-    this.client.on(RTVIEvent.MicrophoneDisabled, () => {
-      console.log('[Pipecat] RTVI Event: Microphone disabled')
-    })
+    // Microphone events (Note: MicrophoneEnabled/Disabled events may not exist in current SDK version)
+    // We'll use TrackStarted instead to detect microphone activation
 
     // Log all events for debugging
     this.client.on(RTVIEvent.TransportStateChanged, (state: string) => {
@@ -251,45 +254,55 @@ export class NebulaTranslateClient {
    * Handle incoming messages from backend
    */
   private handleMessage(message: RTVIMessage) {
-    const { type, ...data } = message
+    console.log('[HANDLER] ═══ handleMessage CALLED ═══')
+    console.log('[HANDLER] Raw message:', JSON.stringify(message, null, 2))
 
-    // Log all received messages for debugging
-    console.log('[Pipecat] Received message:', { type, ...data })
+    // The onServerMessage callback receives the already-unwrapped data payload
+    // So message IS the data, not a wrapper with type and data fields
+    const msgData = message as any
+    const type = msgData.type || (message as any).type
+
+    console.log('[HANDLER] Message type:', type)
+    console.log('[HANDLER] Message data:', msgData)
 
     switch (type) {
-      case 'transcript':
-        console.log('[Pipecat] 📝 Transcript received:', data.text, 'speaker:', data.speaker)
-        this.callbacks.onTranscript?.(data.text, data.speaker)
+      case 'translation':
+        console.log('[HANDLER] 🌐 Processing TRANSLATION')
+        console.log('[HANDLER] Text:', msgData.text, 'Speaker:', msgData.speaker)
+        console.log('[HANDLER] Calling onTranslation callback...')
+        this.callbacks.onTranslation?.(msgData.text, msgData.speaker)
+        console.log('[HANDLER] onTranslation callback completed')
         break
 
-      case 'translation':
-        console.log('[Pipecat] 🌐 Translation received:', data.text, 'speaker:', data.speaker)
-        this.callbacks.onTranslation?.(data.text, data.speaker)
+      case 'transcript':
+        console.log('[HANDLER] 📝 Processing TRANSCRIPT')
+        console.log('[HANDLER] Text:', msgData.text, 'Speaker:', msgData.speaker)
+        this.callbacks.onTranscript?.(msgData.text, msgData.speaker)
         break
 
       case 'audio_level':
         // Uncomment for audio level debugging (can be noisy)
-        // console.log('[Pipecat] 🔊 Audio level:', data.level, 'speaker:', data.speaker)
-        this.callbacks.onAudioLevel?.(data.level, data.speaker)
+        // console.log('[Pipecat] 🔊 Audio level:', msgData.level, 'speaker:', msgData.speaker)
+        this.callbacks.onAudioLevel?.(msgData.level, msgData.speaker)
         break
 
       case 'thinking':
-        console.log('[Pipecat] 🤔 Thinking indicator:', data.is_thinking)
-        this.callbacks.onThinking?.(data.is_thinking)
+        console.log('[Pipecat] 🤔 Thinking indicator:', msgData.is_thinking)
+        this.callbacks.onThinking?.(msgData.is_thinking)
         break
 
       case 'connection_state':
         // Handle connection state changes
-        console.log('[Pipecat] 🔌 Connection state:', data.state)
+        console.log('[Pipecat] 🔌 Connection state:', msgData.state)
         break
 
       case 'error':
-        console.error('[Pipecat] ❌ Backend error:', data.error_message)
-        this.callbacks.onError?.(new Error(data.error_message))
+        console.error('[Pipecat] ❌ Backend error:', msgData.error_message)
+        this.callbacks.onError?.(new Error(msgData.error_message))
         break
 
       default:
-        console.log('[Pipecat] ⚠️ Unknown message type:', type, data)
+        console.log('[Pipecat] ⚠️ Unknown message type:', type, msgData)
     }
   }
 

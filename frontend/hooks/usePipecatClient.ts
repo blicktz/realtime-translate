@@ -133,6 +133,70 @@ export function usePipecatClient() {
                   } else {
                     console.error('[WebRTC] ❌ Could not access peer connection object')
                   }
+
+                  // CRITICAL FIX: Access data channel directly for message reception
+                  console.log('[DATA-CHANNEL] Attempting to access data channel...')
+                  if (pc) {
+                    // Method 1: Check sctp.transport for data channels
+                    const sctp = pc.sctp
+                    console.log('[DATA-CHANNEL] SCTP:', sctp)
+
+                    // Method 2: Listen for datachannel event (for channels created by remote)
+                    const existingHandler = pc.ondatachannel
+                    console.log('[DATA-CHANNEL] Existing ondatachannel handler:', existingHandler)
+
+                    pc.addEventListener('datachannel', (event: RTCDataChannelEvent) => {
+                      console.log('[DATA-CHANNEL] 🎉 Data channel event received!')
+                      const dataChannel = event.channel
+                      console.log('[DATA-CHANNEL] Channel label:', dataChannel.label)
+                      console.log('[DATA-CHANNEL] Channel state:', dataChannel.readyState)
+
+                      // Add our message handler
+                      dataChannel.onmessage = (msgEvent: MessageEvent) => {
+                        console.log('[DATA-CHANNEL] 📨 RAW MESSAGE RECEIVED!')
+                        console.log('[DATA-CHANNEL] Raw data:', msgEvent.data)
+
+                        try {
+                          const message = JSON.parse(msgEvent.data)
+                          console.log('[DATA-CHANNEL] Parsed message:', message)
+
+                          // Manually call the appropriate callbacks based on message type
+                          if (message.type === 'translation') {
+                            console.log('[DATA-CHANNEL] Translation message detected!')
+                            console.log('[DATA-CHANNEL] Text:', message.text)
+                            console.log('[DATA-CHANNEL] Speaker:', message.speaker)
+                            console.log('[DATA-CHANNEL] Calling onTranslation callback...')
+
+                            // Directly call onTranslation callback
+                            addMessage({
+                              speaker: message.speaker,
+                              text: message.text,
+                              isTranslation: true
+                            })
+                            console.log('[DATA-CHANNEL] Message added to store!')
+                          } else {
+                            console.log('[DATA-CHANNEL] Other message type:', message.type)
+                          }
+                        } catch (error) {
+                          console.error('[DATA-CHANNEL] Error parsing message:', error)
+                        }
+                      }
+
+                      dataChannel.onopen = () => {
+                        console.log('[DATA-CHANNEL] 🔓 Data channel opened!')
+                      }
+
+                      dataChannel.onclose = () => {
+                        console.log('[DATA-CHANNEL] 🔒 Data channel closed!')
+                      }
+
+                      dataChannel.onerror = (error) => {
+                        console.error('[DATA-CHANNEL] ❌ Data channel error:', error)
+                      }
+                    })
+
+                    console.log('[DATA-CHANNEL] Datachannel event listener attached')
+                  }
                 }
               } catch (error) {
                 console.error('[WebRTC] Error inspecting peer connection:', error)
@@ -160,11 +224,16 @@ export function usePipecatClient() {
           },
 
           onTranslation: (text, speaker) => {
+            console.log('[STORE] ✅ onTranslation callback received!')
+            console.log('[STORE] Text:', text)
+            console.log('[STORE] Speaker:', speaker)
+            console.log('[STORE] Calling addMessage...')
             addMessage({
               speaker,
               text,
               isTranslation: true
             })
+            console.log('[STORE] addMessage called successfully')
           },
 
           onThinking: (isThinking) => {

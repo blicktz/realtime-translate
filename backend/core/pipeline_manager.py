@@ -354,31 +354,25 @@ class TextRouterProcessor(FrameProcessor):
             await self.push_frame(frame, direction)  # CRITICAL: Forward SystemFrames too!
             return
 
-        # Route text frames based on turn state
-        current_speaker = self.manager.state_machine.current_speaker
+        # Determine speaker from state (no need to check current_speaker!)
+        speaker = "user" if self.manager.state_machine.should_output_audio else "partner"
 
         # Debug logging to track text frame routing
         self.manager.logger.info(f"[TEXT_ROUTER] Received TextFrame: '{frame.text}'")
-        self.manager.logger.info(f"[TEXT_ROUTER] current_speaker: {current_speaker}")
+        self.manager.logger.info(f"[TEXT_ROUTER] speaker: {speaker}")
         self.manager.logger.info(f"[TEXT_ROUTER] should_output_audio: {self.manager.state_machine.should_output_audio}")
 
         if self.manager.state_machine.should_output_audio:
             # User turn: forward to TTS
             await self.push_frame(frame, direction)
             # Also emit text for display
-            if current_speaker:
-                self.manager.logger.info(f"[TEXT_ROUTER] Calling _emit_text_output (USER TURN)")
-                self.manager._emit_text_output(frame.text, current_speaker)
-            else:
-                self.manager.logger.warning(f"[TEXT_ROUTER] ❌ current_speaker is None! Cannot emit text.")
+            self.manager.logger.info(f"[TEXT_ROUTER] Calling _emit_text_output (USER TURN)")
+            self.manager._emit_text_output(frame.text, speaker)
 
         else:
             # Partner turn: text only, no TTS
-            if current_speaker:
-                self.manager.logger.info(f"[TEXT_ROUTER] Calling _emit_text_output (PARTNER TURN)")
-                self.manager._emit_text_output(frame.text, current_speaker)
-            else:
-                self.manager.logger.warning(f"[TEXT_ROUTER] ❌ current_speaker is None! Cannot emit text.")
+            self.manager.logger.info(f"[TEXT_ROUTER] Calling _emit_text_output (PARTNER TURN)")
+            self.manager._emit_text_output(frame.text, speaker)
             # Don't forward to TTS
 
 

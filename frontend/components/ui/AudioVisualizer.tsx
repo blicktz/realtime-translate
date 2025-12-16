@@ -9,7 +9,7 @@ const BAR_GAP = 2
 
 export default function AudioVisualizer() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const animationFrameRef = useRef<number>()
+  const animationFrameRef = useRef<number | undefined>(undefined)
   const { audioLevel, currentSpeaker, isPTTPressed } = useTranslatorStore()
 
   useEffect(() => {
